@@ -77,8 +77,10 @@ def render_plotly_graph(tx_id, include_2hop=True):
         x1, y1 = pos[edge[1]]
         hop = edge[2].get("hop", 1)
         amount = edge[2].get("amount", "Transfer")
-
-        color = "#ef4444" if hop == 1 else "#e2e8f0"
+        tx_info = fraud_data.get_transaction_by_id(tx_id)
+        is_low_risk = bool(tx_info and (tx_info.get("risk") == "Low" or tx_info.get("auditor_decision") in ["Legitimate", "Approved", "Approve"]))
+        
+        color = ("#2563eb" if is_low_risk else "#ef4444") if hop == 1 else "#e2e8f0"
         width = 2.5 if hop == 1 else 0.8
         dash = "solid" if hop == 1 else "dot"
 

@@ -108,9 +108,9 @@ st.html(textwrap.dedent("""
         background:#fffbeb; border:1px solid #fde68a; border-radius:10px;
         padding:14px 16px; margin-top:16px;
     }
-    .xai-box-high {
-        background:#fff5f5; border:1px solid #fecaca;
-    }
+    .xai-box-high { background:#fff5f5; border:1px solid #fecaca; }
+    .xai-box-medium { background:#fffbeb; border:1px solid #fde68a; }
+    .xai-box-low { background:#f0fdf4; border:1px solid #bbf7d0; }
     .xai-title { font-weight:700; font-size:13px; color:#1e293b; margin-bottom:8px; }
     .xai-list { margin:0; padding-left:18px; font-size:12px; color:#334155; line-height:1.8; }
 
@@ -236,10 +236,10 @@ with st.sidebar:
     """))
 
     # If goto_graph flag is set, pre-select the graph page
-    default_page_idx = 2 if st.session_state.goto_graph else 0
+    default_page_idx = 3 if st.session_state.goto_graph else 0
     page = st.radio(
         "Navigation",
-        ["Dashboard", "Transactions", "Alerts / Graph Network", "Customers", "Reports", "Settings", "Help"],
+        ["Dashboard", "⚡ Real-Time Simulator", "Transactions", "Alerts / Graph Network", "Customers", "Reports", "Settings", "Help"],
         index=default_page_idx,
         label_visibility="collapsed"
     )
@@ -272,29 +272,218 @@ st.write("")
 # ══════════════════════════════════════════════════════════════════════════════
 if page == "Dashboard":
 
-    # Top Banner
-    st.html(textwrap.dedent("""
+    # ── RAW TRANSACTION INPUT FIELDS AT TOP OF DASHBOARD ──
+    with st.expander("📥 Submit Raw Dataset Transactions for Real-Time Model Fan-Out Detection", expanded=True):
+        st.markdown(
+            "Supply raw dataset transaction fields (**Timestamp, From Bank, From Account, To Bank, To Account, Amount Received, Receiving Currency, Amount Paid, Payment Currency, Payment Format, Bank Name, Bank ID, Account Number, Entity ID, Entity Name**). "
+            "Input 1, 5, 10, 20 or any number of transactions. The GAT + LightGBM model will detect fan-out patterns and display results live on this Dashboard!"
+        )
+        
+        db_tab0, db_tab1, db_tab2 = st.tabs([
+            "📡 Real-Time Live Bank Streamer", 
+            "✍️ Single / Multi Input Form", 
+            "📊 Batch Table Editor (10, 20+ Txs)"
+        ])
+
+        with db_tab0:
+            st.markdown("#### 📡 Real-Time Bank Stream Engine (Continuous Live Ingestion)")
+            st.markdown(
+                "Simulate real bank streaming transactions continuously in real time. The stream engine emits ONLY raw dataset features "
+                "(**Timestamp, From Bank, From Account, To Bank, To Account, Amount Paid, Payment Currency, Amount Received, Receiving Currency, Payment Format, Bank Name, Bank ID, Account Number, Entity ID, Entity Name**). "
+                "Feature engineering, GAT + LightGBM model detection, and graph topology updates are computed dynamically by our system!"
+            )
+
+            # Session State initialization for continuous live stream
+            if "is_live_streaming" not in st.session_state:
+                st.session_state.is_live_streaming = False
+            if "live_stream_count" not in st.session_state:
+                st.session_state.live_stream_count = 0
+            if "live_stream_speed" not in st.session_state:
+                st.session_state.live_stream_speed = 2.0
+
+            s_col1, s_col2, s_col3 = st.columns([1.5, 1, 1])
+            with s_col1:
+                stream_toggle = st.toggle("🔴 START CONTINUOUS LIVE STREAMING (Real-Time Ingestion)", value=st.session_state.is_live_streaming, key="live_stream_toggle")
+                st.session_state.is_live_streaming = stream_toggle
+            with s_col2:
+                stream_speed = st.slider("Stream Interval (seconds)", min_value=1.0, max_value=5.0, value=float(st.session_state.live_stream_speed), step=0.5, key="stream_speed_slider")
+                st.session_state.live_stream_speed = stream_speed
+            with s_col3:
+                if st.button("🗑️ Reset Stream Engine State", use_container_width=True):
+                    fraud_data.reset_system_state()
+                    st.session_state.live_stream_count = 0
+                    st.session_state.is_live_streaming = False
+                    st.session_state.selected_tx_id = "TX-10231"
+                    st.rerun()
+
+            if st.session_state.is_live_streaming:
+                import stream_engine
+                import time
+                raw_tx = stream_engine.generate_raw_transaction()
+                new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
+                st.session_state.live_stream_count += 1
+                if new_tx["risk"] in ["High", "Medium"]:
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                st.info(f"📡 **Live Stream Ingestion Active** (Ingested #{st.session_state.live_stream_count}): {raw_tx['from_account']} ➔ {raw_tx['to_account']} | ${raw_tx['amount_paid']:,.2f} USD | Evaluated Score = {new_tx['risk_score']}/100 ({new_tx['risk']} Risk)")
+                time.sleep(st.session_state.live_stream_speed)
+                st.rerun()
+
+
+
+            # Direct Stream Injection Buttons
+            st.markdown("---")
+            st.markdown("**⚡ Quick Stream Generators (Inject Raw Fan-Out / Single Transactions):**")
+            sc_col1, sc_col2, sc_col3 = st.columns(3)
+            with sc_col1:
+                if st.button("🏢 Stream New Corporate Account (10 Supplier Fan-Out)", type="primary", use_container_width=True):
+                    corp_txs = [
+                        {"timestamp": f"2026/09/21 14:{i+1:02d}", "from_bank": "National Bank of Harrisburg", "from_account": "ACC_CORP_SUPPLIERS_88", "to_bank": "Acme Bank", "to_account": f"ACC_SUPPLIER_{i+1:02d}", "amount_paid": 4850.0, "amount_received": 4850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "ACH", "bank_name": "National Bank of Harrisburg", "bank_id": "BNK-1092", "account_number": "ACC_CORP_SUPPLIERS_88", "entity_id": "ENT-CORP-88", "entity_name": "Acme Global Manufacturing Corp"}
+                        for i in range(10)
+                    ]
+                    new_tx = fraud_data.add_realtime_simulation_transaction(corp_txs)
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                    st.success(f"✅ Streamed New Corporate Account ({new_tx['tx_id']}): 10 Supplier Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
+                    st.rerun()
+
+            with sc_col2:
+                if st.button("🚨 Stream Novel High-Risk Mule Fan-Out Burst", use_container_width=True):
+                    mule_txs = [
+                        {"timestamp": f"2026/09/21 15:{i+1:02d}", "from_bank": "Bank of New York", "from_account": "ACC_NOVEL_MULE_99", "to_bank": "Offshore Bank", "to_account": f"ACC_MULE_RECV_{i+1:02d}", "amount_paid": 9850.0, "amount_received": 9850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "Wire", "bank_name": "Bank of New York", "bank_id": "BNK-0012", "account_number": "ACC_NOVEL_MULE_99", "entity_id": "ENT-MULE-99", "entity_name": "Unverified Individual Entity"}
+                        for i in range(10)
+                    ]
+                    new_tx = fraud_data.add_realtime_simulation_transaction(mule_txs)
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                    st.success(f"✅ Streamed Novel High-Risk Burst ({new_tx['tx_id']}): 10 Mule Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
+                    st.rerun()
+
+            with sc_col3:
+                if st.button("⚡ Stream 1 Single Real-Time Transfer", use_container_width=True):
+                    import stream_engine
+                    raw_tx = stream_engine.generate_raw_transaction()
+                    new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                    st.success(f"✅ Streamed Single Real-Time Transfer ({new_tx['tx_id']})! Sender: {raw_tx['from_account']} ➔ {raw_tx['to_account']}. Risk = {new_tx['risk_score']}/100.")
+                    st.rerun()
+
+
+        with db_tab1:
+            with st.form("dash_tx_form", clear_on_submit=False):
+                d_c1, d_c2, d_c3, d_c4 = st.columns(4)
+                with d_c1:
+                    dash_from_bank = st.text_input("From Bank", value="Bank of New York")
+                    dash_from_acc = st.text_input("From Account", value="ACC_78421")
+                    dash_bank_name = st.text_input("Bank Name", value="GlobalTrust Financial")
+                    dash_bank_id = st.text_input("Bank ID", value="BNK-1092")
+                with d_c2:
+                    dash_to_bank = st.text_input("To Bank", value="Portugal Bank")
+                    dash_to_acc = st.text_input("To Account", value="ACC_90112")
+                    dash_acc_num = st.text_input("Account Number", value="8001BB380")
+                    dash_entity_id = st.text_input("Entity ID", value="ENT-9912")
+                with d_c3:
+                    dash_amt_paid = st.number_input("Amount Paid ($)", min_value=1.0, value=9500.0, step=100.0)
+                    dash_pay_curr = st.selectbox("Payment Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
+                    dash_amt_rec = st.number_input("Amount Received ($)", min_value=1.0, value=9500.0, step=100.0)
+                    dash_rec_curr = st.selectbox("Receiving Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
+                with d_c4:
+                    dash_fmt = st.selectbox("Payment Format", ["ACH", "Wire", "Credit Card", "Cheque", "Cash"], index=0)
+                    dash_time = st.text_input("Timestamp", value=datetime.now().strftime("%Y/%m/%d %H:%M"))
+                    dash_entity_name = st.text_input("Entity Name", value="Global Logistics Corp")
+
+                dash_submitted = st.form_submit_button("⚡ Run Model Detection & Display on Dashboard", type="primary", use_container_width=True)
+                if dash_submitted:
+                    raw_in = [{
+                        "timestamp": dash_time,
+                        "from_bank": dash_from_bank,
+                        "from_account": dash_from_acc,
+                        "to_bank": dash_to_bank,
+                        "to_account": dash_to_acc,
+                        "amount_paid": dash_amt_paid,
+                        "amount_received": dash_amt_rec,
+                        "payment_currency": dash_pay_curr,
+                        "receiving_currency": dash_rec_curr,
+                        "payment_format": dash_fmt,
+                        "bank_name": dash_bank_name,
+                        "bank_id": dash_bank_id,
+                        "account_number": dash_acc_num,
+                        "entity_id": dash_entity_id,
+                        "entity_name": dash_entity_name
+                    }]
+                    new_tx = fraud_data.add_realtime_simulation_transaction(raw_in)
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                    st.success(f"✅ Executed Model Inference: Created {new_tx['tx_id']} on Dashboard with Risk Score = {new_tx['risk_score']}/100!")
+                    st.rerun()
+
+        with db_tab2:
+            st.markdown("Enter 10, 20 or any number of transactions into the table below:")
+            if "dash_batch_df" not in st.session_state:
+                st.session_state.dash_batch_df = pd.DataFrame([
+                    {"Timestamp": "2026/09/21 14:01", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Portugal Bank", "To Account": "ACC_90112", "Amount Paid ($)": 9500.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:02", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Canada Bank", "To Account": "ACC_90113", "Amount Paid ($)": 9450.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:03", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "UK Bank", "To Account": "ACC_90114", "Amount Paid ($)": 9800.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
+                    {"Timestamp": "2026/09/21 14:04", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Germany Bank", "To Account": "ACC_90115", "Amount Paid ($)": 9300.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:05", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Spain Bank", "To Account": "ACC_90116", "Amount Paid ($)": 9600.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:06", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Brazil Bank", "To Account": "ACC_90117", "Amount Paid ($)": 9750.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
+                    {"Timestamp": "2026/09/21 14:07", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Japan Bank", "To Account": "ACC_90118", "Amount Paid ($)": 9200.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:08", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Russia Bank", "To Account": "ACC_90119", "Amount Paid ($)": 9900.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                    {"Timestamp": "2026/09/21 14:09", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Italy Bank", "To Account": "ACC_90120", "Amount Paid ($)": 9650.0, "Payment Currency": "US Dollar", "Payment Format": "Wire"},
+                    {"Timestamp": "2026/09/21 14:10", "From Bank": "Bank of New York", "From Account": "ACC_78421", "To Bank": "Israel Bank", "To Account": "ACC_90121", "Amount Paid ($)": 9400.0, "Payment Currency": "US Dollar", "Payment Format": "ACH"},
+                ])
+
+            edited_db_df = st.data_editor(
+                st.session_state.dash_batch_df,
+                num_rows="dynamic",
+                use_container_width=True,
+                hide_index=True,
+                key="dash_batch_table_editor"
+            )
+
+            if st.button("⚡ Run Model Detection on Batch Transactions & Display on Dashboard", type="primary", use_container_width=True):
+                if not edited_db_df.empty:
+                    batch_txs = []
+                    for idx, row in edited_db_df.iterrows():
+                        batch_txs.append({
+                            "timestamp": str(row.get("Timestamp", f"2026/09/21 14:{idx+1:02d}")),
+                            "from_bank": str(row.get("From Bank", "GlobalTrust Bank")),
+                            "from_account": str(row.get("From Account", "ACC_78421")),
+                            "to_bank": str(row.get("To Bank", "Target Bank")),
+                            "to_account": str(row.get("To Account", f"ACC_9011{idx+1}")),
+                            "amount_paid": float(row.get("Amount Paid ($)", 1000.0) or 1000.0),
+                            "amount_received": float(row.get("Amount Paid ($)", 1000.0) or 1000.0),
+                            "payment_currency": str(row.get("Payment Currency", "US Dollar")),
+                            "payment_format": str(row.get("Payment Format", "ACH"))
+                        })
+                    new_tx = fraud_data.add_realtime_simulation_transaction(batch_txs)
+                    st.session_state.selected_tx_id = new_tx["tx_id"]
+                    st.success(f"✅ Executed Model Inference: Created {new_tx['tx_id']} on Dashboard with {len(batch_txs)} transactions! Risk Score = {new_tx['risk_score']}/100")
+                    st.rerun()
+
+
+    st.markdown("---")
+
+    # Top Banner — Calculated dynamically from real dataset & engine
+    metrics = fraud_data.get_metrics_summary()
+    st.html(textwrap.dedent(f"""
     <div class="top-banner">
         <div class="top-banner-icon">📋</div>
         <div>
             <div style="font-size:12px;color:#64748b;font-weight:600;">Total Transactions Processed</div>
-            <div class="banner-value">1,80,256</div>
-            <div class="banner-subtext">↑ 12,430 today</div>
+            <div class="banner-value">{metrics['total_processed']}</div>
+            <div class="banner-subtext">{metrics['today_added']}</div>
         </div>
         <div style="margin-left:30px;">
             <div style="font-size:12px;color:#64748b;font-weight:600;">High Risk Alerts</div>
-            <div style="font-size:26px;font-weight:800;color:#dc2626;">3</div>
+            <div style="font-size:26px;font-weight:800;color:#dc2626;">{metrics['high_risk']}</div>
             <div style="font-size:12px;color:#dc2626;font-weight:600;">Require Human Review</div>
         </div>
         <div style="margin-left:30px;">
             <div style="font-size:12px;color:#64748b;font-weight:600;">Medium Risk</div>
-            <div style="font-size:26px;font-weight:800;color:#d97706;">2</div>
+            <div style="font-size:26px;font-weight:800;color:#d97706;">{metrics['medium_risk']}</div>
             <div style="font-size:12px;color:#d97706;font-weight:600;">Under Monitoring</div>
         </div>
         <div style="margin-left:30px;">
             <div style="font-size:12px;color:#64748b;font-weight:600;">Low Risk</div>
-            <div style="font-size:26px;font-weight:800;color:#dc2626;">2</div>
-            <div style="font-size:12px;color:#dc2626;font-weight:600;">Low Priority</div>
+            <div style="font-size:26px;font-weight:800;color:#16a34a;">{metrics['low_risk']}</div>
+            <div style="font-size:12px;color:#16a34a;font-weight:600;">Low Priority</div>
         </div>
         <div style="margin-left:auto;background:#f0fdf4;border:1px solid #bbf7d0;border-radius:8px;padding:10px 18px;text-align:center;">
             <div style="font-size:11px;color:#16a34a;font-weight:700;">SYSTEM STATUS</div>
@@ -312,10 +501,19 @@ if page == "Dashboard":
     with col_left:
         st.html('<div class="section-label">🚨 Flagged Accounts</div>')
 
-        all_txs = fraud_data.get_all_flagged_senders()
-        # Sort: High first, then Medium, then Low
-        order = {"High": 0, "Medium": 1, "Low": 2}
-        all_txs.sort(key=lambda x: (order.get(x["risk"], 9), -x["risk_score"]))
+        all_flagged = fraud_data.get_all_flagged_senders()
+        
+        # Active streamed simulation transactions FIRST so live streams are immediately visible on Dashboard
+        sim_txs = [t for t in all_flagged if t["tx_id"].startswith("TX-SIM")]
+        sim_txs.sort(key=lambda x: -x["risk_score"])
+        
+        hist_high = [t for t in all_flagged if t["risk"] == "High" and not t["tx_id"].startswith("TX-SIM")]
+        hist_high.sort(key=lambda x: -x["risk_score"])
+        
+        hist_med = [t for t in all_flagged if t["risk"] == "Medium" and not t["tx_id"].startswith("TX-SIM")]
+        hist_med.sort(key=lambda x: -x["risk_score"])
+        
+        all_txs = sim_txs + hist_high[:5] + hist_med[:5]
 
         for tx in all_txs:
             acc = tx["account"]
@@ -393,8 +591,8 @@ if page == "Dashboard":
 
         fan_rows = fraud_data.get_fan_out_rows(st.session_state.selected_tx_id)
         df_fan = pd.DataFrame(fan_rows)
-        df_fan.columns = ["Sub-TX ID", "To Account", "Amount (₹)", "Time", "Account age(days)", "Status"]
-        df_display = df_fan[["Sub-TX ID", "To Account", "Amount (₹)", "Time", "Account age(days)", "Status"]]
+        df_fan.columns = ["Sub-TX ID", "To Account", "Amount ($)", "Time", "Account age(days)", "Status"]
+        df_display = df_fan[["Sub-TX ID", "To Account", "Amount ($)", "Time", "Account age(days)", "Status"]]
 
         # Clickable table with row selection
         event = st.dataframe(
@@ -420,30 +618,43 @@ if page == "Dashboard":
         """)
 
         # ── Why Flagged? XAI Box ──
-        is_high = (risk == "High")
-        xai_extra = "xai-box-high" if is_high else ""
+        if risk == "High":
+            xai_extra = "xai-box-high"
+            fraud_icon = "🚨"
+            fraud_label = "HIGH FRAUD RISK DETECTED"
+            xai_header_text = "Why was this flagged?"
+        elif risk == "Medium":
+            xai_extra = "xai-box-medium"
+            fraud_icon = "⚠️"
+            fraud_label = "SUSPICIOUS PATTERN DETECTED"
+            xai_header_text = "Why was this flagged?"
+        else:
+            xai_extra = "xai-box-low"
+            fraud_icon = "✅"
+            fraud_label = "LOW RISK — VERIFIED TRANSACTION"
+            xai_header_text = "Model Verification Analysis"
+
         exps_html = "".join([f"<li>{e}</li>" for e in curr_tx["explanations"]])
-        fraud_icon = "⚠️" if curr_tx["is_fraud"] else "ℹ️"
-        fraud_label = "FRAUD DETECTED" if curr_tx["is_fraud"] else "SUSPICIOUS ACTIVITY"
 
         st.html(textwrap.dedent(f"""
         <div class="xai-box {xai_extra}">
             <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:10px;">
-                <div class="xai-title">{fraud_icon} {fraud_label} — Why was this flagged?</div>
+                <div class="xai-title">{fraud_icon} {fraud_label} — {xai_header_text}</div>
                 <span class="badge-{risk.lower()}">{pattern}</span>
             </div>
             <ul class="xai-list">
                 {exps_html}
             </ul>
-            <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #fde68a;padding-top:8px;">
-                Model: <b>{curr_tx['model_used']}</b> &nbsp;|&nbsp;
-                Confidence: <b>{curr_tx['model_confidence']}</b>
+            <div style="font-size:11px;color:#64748b;margin-top:10px;border-top:1px solid #e2e8f0;padding-top:8px;">
+                Models: <b>GAT ({curr_tx.get('gat_confidence', '86%')})</b> + <b>LightGBM ({curr_tx.get('lgb_confidence', '88%')})</b> &nbsp;|&nbsp;
+                Rule Engine: <b>{curr_tx.get('rule_confidence', '95%')}</b> &nbsp;|&nbsp;
+                Combined Risk Score: <b>{curr_tx['risk_score']}/100</b>
             </div>
         </div>
         """))
 
         # ── Authorised Bank Auditor Decision Panel (HIGH RISK ONLY) ──
-        if is_high:
+        if risk == "High":
             tx_key = curr_tx["tx_id"]
             already_submitted = st.session_state.human_decision_submitted.get(tx_key)
 
@@ -498,6 +709,7 @@ if page == "Dashboard":
                         "notes": notes,
                         "timestamp": datetime.now().strftime("%d %b %Y, %I:%M %p")
                     }
+                    fraud_data.record_auditor_decision(tx_key, decision, notes)
                     st.rerun()
 
         # ── AI Advisory (COMPLETELY AT BOTTOM) ──
@@ -532,7 +744,12 @@ if page == "Dashboard":
             </div>
             """))
         else:
-            to_acc = sub_tx["to_account"]
+            if isinstance(sub_tx, (list, tuple)) and len(sub_tx) > 0:
+                sub_tx = sub_tx[0]
+            if isinstance(sub_tx, dict):
+                to_acc = sub_tx.get("to_account", sub_tx.get("receiver", sub_tx.get("receiver_account", "")))
+            else:
+                to_acc = str(sub_tx)
             profile = fraud_data.get_receiver_profile(to_acc)
             risk_tier = profile.get("risk_tier", "Unknown")
             kyc = profile.get("kyc_status", "Unknown")
@@ -602,11 +819,22 @@ if page == "Dashboard":
             </div>
             """))
 
+    # ── Live Streaming Auto-Rerun Loop ──
+    if st.session_state.get("is_live_streaming", False):
+        import stream_engine
+        import time
+        raw_tx = stream_engine.generate_raw_transaction()
+        new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
+        st.session_state.live_stream_count += 1
+        st.toast(f"📡 Real-Time Stream Ingested #{st.session_state.live_stream_count}: {raw_tx['from_account']} ➔ {raw_tx['to_account']} (${raw_tx['amount_paid']:,.2f} USD)", icon="📡")
+        time.sleep(st.session_state.get("live_stream_speed", 2.0))
+        st.rerun()
 
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TRANSACTIONS PAGE
 # ══════════════════════════════════════════════════════════════════════════════
+
 elif page == "Transactions":
     st.subheader("📊 All Transactions Log")
     df_all = fraud_data.get_transactions_df()
@@ -616,7 +844,7 @@ elif page == "Transactions":
     with c2:
         risk_filter = st.multiselect("Filter Risk Level", ["High", "Medium", "Low"], default=["High", "Medium", "Low"])
     with c3:
-        min_amt = st.slider("Min Amount (₹)", 0, 1500000, 0)
+        min_amt = st.slider("Min Amount ($)", 0, 50000, 0)
 
     filtered_df = df_all[df_all["risk"].isin(risk_filter) & (df_all["amount"] >= min_amt)]
     if search_q:
@@ -630,8 +858,221 @@ elif page == "Transactions":
     )
 
 # ══════════════════════════════════════════════════════════════════════════════
-#  ALERTS / GRAPH NETWORK PAGE
+#  REAL-TIME SIMULATOR PAGE
 # ══════════════════════════════════════════════════════════════════════════════
+elif page == "⚡ Real-Time Simulator":
+    st.subheader("⚡ Real-Time Single-Transaction Streaming Engine & Model Inference Suite")
+    st.markdown(
+        "Input raw transactions one-by-one (**From Bank, From Account, To Bank, To Account, Amount Paid, Amount Received, Currency, Format, Timestamp**). "
+        "As transactions arrive, the engine performs **EDA & feature engineering on the fly**, evaluates **Fan-Out out-degree growth**, "
+        "computes **GAT + LightGBM + Rule Engine** ensemble scores, updates the **Money Trail Graph live**, and re-colors nodes upon **Human Auditor Approval**!"
+    )
+
+    st.markdown("---")
+    
+    # Session state initialization for real-time streaming engine
+    if "stream_tx_list" not in st.session_state:
+        st.session_state.stream_tx_list = []
+    if "stream_step_index" not in st.session_state:
+        st.session_state.stream_step_index = 0
+
+    tab_single, tab_preset, tab_batch = st.tabs([
+        "📥 Single Transaction Streamer (Input Form)", 
+        "⚡ Step-by-Step Fan-Out Demo (1-by-1 Feed)", 
+        "✍️ Batch Table Editor"
+    ])
+
+    # ── TAB 1: Single Transaction Input Form ──
+    with tab_single:
+        st.markdown("#### 📥 Submit Individual Streaming Transaction")
+        st.markdown("Fill in raw transaction details as columns present in `HI-Small_Trans.csv`:")
+        
+        with st.form("single_tx_form", clear_on_submit=False):
+            f_col1, f_col2, f_col3 = st.columns(3)
+            with f_col1:
+                from_bank = st.text_input("From Bank", value="Bank of New York")
+                from_acc = st.text_input("From Account (Sender ID)", value="ACC_78421")
+                timestamp = st.text_input("Timestamp", value=datetime.now().strftime("%Y/%m/%d %H:%M:%S"))
+            with f_col2:
+                to_bank = st.text_input("To Bank", value="Portugal Bank")
+                to_acc = st.text_input("To Account (Receiver ID)", value=f"ACC_9011{len(st.session_state.stream_tx_list)+1:02d}")
+                payment_format = st.selectbox("Payment Format", ["ACH", "Wire", "Credit Card", "Cheque", "Cash"], index=0)
+            with f_col3:
+                amount_paid = st.number_input("Amount Paid ($)", min_value=1.0, value=9500.0, step=100.0)
+                amount_rec = st.number_input("Amount Received ($)", min_value=1.0, value=9500.0, step=100.0)
+                payment_curr = st.selectbox("Payment Currency", ["US Dollar", "Euro", "UK Pound", "Rupee", "Yen"], index=0)
+
+            submitted = st.form_submit_button("➕ Stream Single Transaction (Compute EDA & Update Graph)", type="primary", use_container_width=True)
+            if submitted:
+                new_item = {
+                    "timestamp": timestamp,
+                    "from_bank": from_bank,
+                    "from_account": from_acc,
+                    "to_bank": to_bank,
+                    "to_account": to_acc,
+                    "amount_paid": amount_paid,
+                    "amount_received": amount_rec,
+                    "payment_currency": payment_curr,
+                    "payment_format": payment_format
+                }
+                st.session_state.stream_tx_list.append(new_item)
+                
+                # Execute EDA feature extraction and model inference for current accumulated stream
+                res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
+                st.session_state.selected_tx_id = res_tx["tx_id"]
+                st.success(f"✅ Streamed Tx #{len(st.session_state.stream_tx_list)} ({from_acc} ➔ {to_acc}): Calculated Out-Degree = {len(st.session_state.stream_tx_list)}, Ensemble Risk Score = {res_tx['risk_score']}/100!")
+                st.rerun()
+
+    # ── TAB 2: Step-by-Step Fan-Out Demo ──
+    with tab_preset:
+        st.markdown("#### ⚡ Real-Time Step-by-Step Fan-Out Stream Simulator")
+        st.markdown("Click **'Stream Next Transaction'** to feed transactions 1-by-1 (`ACC_78421 ➔ target`) and watch the GAT + LightGBM risk score dynamically escalate as out-degree grows!")
+
+        fanout_sequence = [
+            {"timestamp": "2026/09/21 14:01", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Portugal Bank", "to_account": "ACC_90112", "amount_paid": 9500.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:02", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Canada Bank", "to_account": "ACC_90113", "amount_paid": 9450.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:03", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "UK Bank", "to_account": "ACC_90114", "amount_paid": 9800.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
+            {"timestamp": "2026/09/21 14:04", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Germany Bank", "to_account": "ACC_90115", "amount_paid": 9300.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:05", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Spain Bank", "to_account": "ACC_90116", "amount_paid": 9600.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:06", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Brazil Bank", "to_account": "ACC_90117", "amount_paid": 9750.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
+            {"timestamp": "2026/09/21 14:07", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Japan Bank", "to_account": "ACC_90118", "amount_paid": 9200.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:08", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Russia Bank", "to_account": "ACC_90119", "amount_paid": 9900.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+            {"timestamp": "2026/09/21 14:09", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Italy Bank", "to_account": "ACC_90120", "amount_paid": 9650.0, "payment_currency": "US Dollar", "payment_format": "Wire"},
+            {"timestamp": "2026/09/21 14:10", "from_bank": "Bank of New York", "from_account": "ACC_78421", "to_bank": "Israel Bank", "to_account": "ACC_90121", "amount_paid": 9400.0, "payment_currency": "US Dollar", "payment_format": "ACH"},
+        ]
+
+        p_col1, p_col2, p_col3 = st.columns(3)
+        with p_col1:
+            if st.button("➡️ Stream Next Fan-Out Transaction (1-by-1 Feed)", type="primary", use_container_width=True):
+                if st.session_state.stream_step_index < len(fanout_sequence):
+                    st.session_state.stream_step_index += 1
+                    st.session_state.stream_tx_list = fanout_sequence[:st.session_state.stream_step_index]
+                    res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
+                    st.session_state.selected_tx_id = res_tx["tx_id"]
+                    st.success(f"✅ Streamed Step {st.session_state.stream_step_index}/10: Out-Degree = {st.session_state.stream_step_index}, Risk = {res_tx['risk_score']}/100!")
+                    st.rerun()
+                else:
+                    st.info("ℹ️ All 10 fan-out transactions have been streamed! Reset engine to restart.")
+        with p_col2:
+            if st.button("🚀 Stream All 10 Transactions at Once", use_container_width=True):
+                st.session_state.stream_step_index = 10
+                st.session_state.stream_tx_list = fanout_sequence
+                res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
+                st.session_state.selected_tx_id = res_tx["tx_id"]
+                st.success("✅ Streamed full 10-tx burst!")
+                st.rerun()
+        with p_col3:
+            if st.button("🗑️ Reset Real-Time Stream Engine", use_container_width=True):
+                st.session_state.stream_tx_list = []
+                st.session_state.stream_step_index = 0
+                st.rerun()
+
+    # ── TAB 3: Batch Table Editor ──
+    with tab_batch:
+        st.markdown("#### ✍️ Batch Transaction Table Editor")
+        if "editor_data" not in st.session_state:
+            st.session_state.editor_data = pd.DataFrame(columns=["#", "Sender Account ID", "Sender Bank", "Receiver Account", "Amount ($)", "Payment Format", "Currency"])
+
+        edited_df = st.data_editor(
+            st.session_state.editor_data,
+            num_rows="dynamic",
+            use_container_width=True,
+            hide_index=True,
+            key="table_editor_instance"
+        )
+
+        if st.button("⚡ Run Real-Time AI Model Inference on Batch Table", type="primary", use_container_width=True):
+            if edited_df.empty:
+                st.warning("⚠️ Please enter at least 1 transaction in the table before running inference.")
+            else:
+                custom_txs = []
+                for idx, row in edited_df.iterrows():
+                    custom_txs.append({
+                        "timestamp": f"2026/09/21 14:{idx+1:02d}",
+                        "from_bank": str(row.get("Sender Bank", "GlobalTrust Bank")),
+                        "from_account": str(row.get("Sender Account ID", "ACC_78421")),
+                        "to_bank": "Target Bank",
+                        "to_account": str(row.get("Receiver Account", f"ACC_9011{idx+1}")),
+                        "amount_paid": float(row.get("Amount ($)", 1000.0) or 1000.0),
+                        "payment_currency": "US Dollar" if str(row.get("Currency", "USD")).upper() in ["USD", "US DOLLAR"] else str(row.get("Currency", "US Dollar")),
+                        "payment_format": str(row.get("Payment Format", "ACH"))
+                    })
+                st.session_state.stream_tx_list = custom_txs
+                new_tx = fraud_data.add_realtime_simulation_transaction(custom_txs)
+                st.session_state.selected_tx_id = new_tx["tx_id"]
+                st.success(f"✅ Real-Time Model Inference Complete for {new_tx['tx_id']}!")
+                st.rerun()
+
+    # ── DISPLAY LIVE STREAMING RESULTS & GRAPH ──
+    st.markdown("---")
+    curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
+    n_streamed = len(st.session_state.stream_tx_list) if st.session_state.stream_tx_list else len(curr_tx.get("to_accounts", []))
+    
+    st.markdown(f"### 📊 Real-Time Stream Execution & Model Score Breakdown — `{curr_tx['tx_id']}`")
+    st.caption(f"Streamed Target Out-Degree: **{n_streamed} Receiver Accounts** | Sender Account: **{curr_tx['account']}** | Total Amount: **{curr_tx['amount_formatted']}**")
+
+    col_r0, col_r1, col_r2, col_r3, col_r4 = st.columns(5)
+    with col_r0:
+        st.metric("Accumulated Out-Degree", f"{n_streamed} Txs")
+    with col_r1:
+        st.metric("GAT Graph Score", curr_tx.get("gat_confidence", "86%"))
+    with col_r2:
+        st.metric("LightGBM Score", curr_tx.get("lgb_confidence", "88%"))
+    with col_r3:
+        st.metric("Rule Engine Score", curr_tx.get("rule_confidence", "95%"))
+    with col_r4:
+        st.metric("Ensemble Risk Score", f"{curr_tx['risk_score']}/100", delta=curr_tx['risk'])
+
+    # Dynamic SHAP Explainability Box
+    box_class = "xai-box-high" if curr_tx["risk"] == "High" else "xai-box-medium" if curr_tx["risk"] == "Medium" else "xai-box-low"
+    risk_emoji = "🚨" if curr_tx["risk"] == "High" else "⚠️" if curr_tx["risk"] == "Medium" else "✅"
+    
+    st.html(textwrap.dedent(f"""
+    <div class="xai-box {box_class}">
+        <div class="xai-title">{risk_emoji} Real-Time SHAP Feature Impact & Model Explainability</div>
+        <ul class="xai-list">
+            {"".join([f"<li>{e}</li>" for e in curr_tx["explanations"]])}
+        </ul>
+    </div>
+    """))
+
+    # Live Interactive Network Graph
+    st.markdown("#### 🕸️ Live Network Topology Graph (Updated Real-Time)")
+    fig_sim = graph_vis.render_plotly_graph(curr_tx["tx_id"], include_2hop=True)
+    st.plotly_chart(fig_sim, use_container_width=True)
+
+    # ── Authorised Bank Auditor Decision Panel ──
+    st.markdown("#### ⚖️ Authorised Bank Auditor Decision Panel")
+    st.markdown("Review the real-time stream graph above. Submitting a decision re-colors graph nodes and updates risk score live:")
+
+    aud_col1, aud_col2 = st.columns([1, 1])
+    with aud_col1:
+        auditor_decision_choice = st.radio(
+            "Select Compliance Decision",
+            ["✅ Approve / Mark Legitimate", "🚨 Flag as Confirmed Fraud / Laundering"],
+            key="stream_auditor_decision_choice"
+        )
+    with aud_col2:
+        auditor_notes_text = st.text_area(
+            "Auditor Compliance Notes",
+            placeholder="e.g., Verified legitimate payroll transfer or vendor invoice payment...",
+            key="stream_auditor_notes_text",
+            height=120
+        )
+
+    if st.button("📋 Submit Auditor Decision & Update Live Graph Topology", type="primary", use_container_width=True):
+        dec_str = "Legitimate" if "Approve" in auditor_decision_choice else "Fraud"
+        fraud_data.update_auditor_decision(curr_tx["tx_id"], dec_str, auditor_notes_text)
+        st.success(f"✅ Recorded Auditor Decision ({auditor_decision_choice})! Updated risk score and graph topology.")
+        st.rerun()
+
+    # ── Table Log of Streamed Transactions ──
+    if st.session_state.stream_tx_list:
+        st.markdown("#### 📜 Streamed Transactions Log")
+        df_stream_log = pd.DataFrame(st.session_state.stream_tx_list)
+        df_stream_log.insert(0, "#", range(1, len(df_stream_log) + 1))
+        st.dataframe(df_stream_log, use_container_width=True)
+
 elif page == "Alerts / Graph Network":
     st.subheader("🕸️ Money Trail")
     st.markdown(
@@ -680,7 +1121,7 @@ elif page == "Alerts / Graph Network":
         </div>
         <div>
             <div style="font-size:11px;color:#64748b;font-weight:600;">AMOUNT</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">₹{tx_info['amount_formatted']}</div>
+            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['amount_formatted']}</div>
         </div>
     </div>
     """))
