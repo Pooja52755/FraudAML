@@ -232,6 +232,17 @@ def get_all_flagged_senders() -> List[Dict[str, Any]]:
                     "model_used": "GAT Graph Model",
                     "raw_res": row.to_dict()
                 })
+                
+                # Cache real entity names for Customer Profiling
+                ACCOUNT_METADATA_CACHE[acc] = {
+                    "Bank Name": str(row.get('From Bank Name', '')),
+                    "Entity Name": str(row.get('From Entity Name', ''))
+                }
+                receiver_acc = str(row.get('To Account', ''))
+                ACCOUNT_METADATA_CACHE[receiver_acc] = {
+                    "Bank Name": str(row.get('To Bank Name', '')),
+                    "Entity Name": str(row.get('To Entity Name', ''))
+                }
             
             try:
                 tx_list.sort(key=lambda x: pd.to_datetime(x["timestamp"]), reverse=True)
