@@ -186,9 +186,9 @@ def get_all_flagged_senders() -> List[Dict[str, Any]]:
     _load_decisions()
     
     if not TRANSACTIONS:
-        csv_path = r"C:\Users\aryan\frontend\GitData\frontend_fanout_gat_test_grouped.csv"
+        csv_path = os.path.join(os.path.dirname(__file__), "Data", "perfect_100_test.csv")
         if os.path.exists(csv_path):
-            df = pd.read_csv(csv_path, nrows=200)
+            df = pd.read_csv(csv_path)
             tx_list = []
             for idx, row in df.iterrows():
                 is_fraud = int(row.get('Actual Label', 0))
