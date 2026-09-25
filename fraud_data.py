@@ -169,23 +169,13 @@ def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[s
     return last_res or TRANSACTIONS[0]
 
 def get_metrics_summary() -> Dict[str, Any]:
-    try:
-        resp = requests.get(f"{BACKEND_URL}/api/dashboard/summary", timeout=3.0)
-        if resp.status_code == 200:
-            data = resp.json()
-            return {
-                "total_processed": data.get("processed", len(TRANSACTIONS)),
-                "today_added": "+ Real-time Live Stream",
-                "high_risk": data.get("high_risk", sum(1 for t in TRANSACTIONS if t["risk"] == "High")),
-                "medium_risk": data.get("medium_risk", sum(1 for t in TRANSACTIONS if t["risk"] == "Medium")),
-                "low_risk": data.get("low_risk", sum(1 for t in TRANSACTIONS if t["risk"] == "Low"))
-            }
-    except Exception:
-        pass
-    
+    # Ensure transactions are pre-loaded
+    if not TRANSACTIONS:
+        get_all_flagged_senders()
+        
     return {
         "total_processed": len(TRANSACTIONS),
-        "today_added": "+ Real-time Live Stream",
+        "today_added": "Static Dataset Analysis",
         "high_risk": sum(1 for t in TRANSACTIONS if t["risk"] == "High"),
         "medium_risk": sum(1 for t in TRANSACTIONS if t["risk"] == "Medium"),
         "low_risk": sum(1 for t in TRANSACTIONS if t["risk"] == "Low")
