@@ -1,5 +1,6 @@
 import requests
 import pandas as pd
+import networkx as nx
 from datetime import datetime
 from typing import Dict, Any, List
 
@@ -8,12 +9,57 @@ BACKEND_URL = "http://localhost:8000"
 TRANSACTIONS = []
 CUSTOMER_PROFILES = {}
 AUDITOR_DECISIONS = {}
+REVIEW_STATES = {"PENDING_REVIEW", "FLAGGED", "APPROVED", "ESCALATED"}
+HOP2_PROFILES = {}
 
 def reset_system_state():
     global TRANSACTIONS, CUSTOMER_PROFILES, AUDITOR_DECISIONS
     TRANSACTIONS.clear()
     CUSTOMER_PROFILES.clear()
     AUDITOR_DECISIONS.clear()
+    try:
+        import stream_engine
+        stream_engine.reset_dataset_cursor()
+    except ImportError:
+        pass
+    try:
+        requests.post(f"{BACKEND_URL}/api/system/reset", timeout=5.0)
+    except requests.RequestException:
+        pass
+
+def _timestamp_value(value: Any):
+    parsed = pd.to_datetime(value, errors="coerce")
+    return parsed if not pd.isna(parsed) else None
+
+def get_customer_accounts() -> List[str]:
+    accounts = {tx.get("account") for tx in TRANSACTIONS if tx.get("account")}
+    accounts.update(tx.get("receiver") for tx in TRANSACTIONS if tx.get("receiver"))
+    try:
+        for tx in get_all_flagged_senders():
+            accounts.update(value for value in (tx.get("account"), tx.get("receiver")) if value)
+    except Exception:
+        pass
+    return sorted(accounts)
+
+def _profile_transactions(acc_id: str, as_of_timestamp: Any = None) -> List[Dict[str, Any]]:
+    transactions = list(TRANSACTIONS)
+    try:
+        known_ids = {tx.get("tx_id") for tx in transactions}
+        transactions.extend(tx for tx in get_all_flagged_senders() if tx.get("tx_id") not in known_ids)
+    except Exception:
+        pass
+    cutoff = _timestamp_value(as_of_timestamp) if as_of_timestamp else None
+    filtered = [
+        tx for tx in transactions
+        if tx.get("account") == acc_id or tx.get("receiver") == acc_id
+    ]
+    if cutoff is None:
+        return filtered
+    return [
+        tx for tx in filtered
+        if (tx_timestamp := _timestamp_value(tx.get("timestamp"))) is not None
+        and tx_timestamp <= cutoff
+    ]
 
 def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[str, Any]:
     global TRANSACTIONS
@@ -44,6 +90,11 @@ def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[s
                     "receiver": res["receiver"],
                     "receiver_bank": res["receiver_bank"],
                     "amount": res["amount"],
+                    "amount_formatted": f"${float(res['amount']):,.2f}",
+                    "total_outgoing_amount": res.get("total_outgoing_amount", res["amount"]),
+                    "total_transactions": res.get("total_transactions", 1),
+                    "review_state": res.get("review_state", "APPROVED"),
+                    "review_reason": res.get("review_reason", ""),
                     "timestamp": res["timestamp"],
                     "payment_format": res["payment_format"],
                     "payment_currency": res["payment_currency"],
@@ -56,8 +107,9 @@ def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[s
                         f"Historical Behavior: {res['explanation'].get('historical_behavior', 'normal')}"
                     ],
                     "gat_confidence": res['explanation'].get('gat_anomaly_score', '85%'),
-                    "lgb_confidence": f"{res['risk_score']}%",
-                    "rule_confidence": "90%",
+                    "lgb_confidence": f"{float(res.get('calibrated_probability', res['risk_score'] / 100)) * 100:.2f}%",
+                    "rule_confidence": f"{min(100.0, (float(res.get('total_transactions', 1)) / 10.0) * 100):.2f}%",
+                    "model_used": "GAT Graph Model",
                     "raw_res": res
                 }
                 TRANSACTIONS.insert(0, tx_entry)
@@ -71,6 +123,11 @@ def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[s
                 "receiver": payload["receiver_account"],
                 "receiver_bank": payload["to_bank"],
                 "amount": payload["amount_paid"],
+                "amount_formatted": f"${payload['amount_paid']:,.2f}",
+                "total_outgoing_amount": payload["amount_paid"],
+                "total_transactions": 1,
+                "review_state": "APPROVED",
+                "review_reason": "Backend unavailable",
                 "timestamp": payload["timestamp"],
                 "payment_format": payload["payment_format"],
                 "payment_currency": payload["payment_currency"],
@@ -79,8 +136,9 @@ def add_realtime_simulation_transaction(raw_txs: List[Dict[str, Any]]) -> Dict[s
                 "pattern": "SINGLE TRANSFER",
                 "explanations": ["Model evaluation offline"],
                 "gat_confidence": "15%",
-                "lgb_confidence": "15%",
-                "rule_confidence": "90%",
+                "lgb_confidence": "0%",
+                "rule_confidence": "0%",
+                "model_used": "Offline Fallback",
                 "raw_res": {}
             }
             TRANSACTIONS.insert(0, tx_entry)
@@ -127,6 +185,11 @@ def get_all_flagged_senders() -> List[Dict[str, Any]]:
                         "receiver": res.get("receiver", "ACC_RECV"),
                         "receiver_bank": res.get("receiver_bank", "0"),
                         "amount": res.get("amount", 0.0),
+                        "amount_formatted": f"${float(res.get('amount', 0.0)):,.2f}",
+                        "total_outgoing_amount": res.get("total_outgoing_amount", res.get("amount", 0.0)),
+                        "total_transactions": res.get("total_transactions", 1),
+                        "review_state": res.get("review_state", "APPROVED"),
+                        "review_reason": res.get("review_reason", ""),
                         "timestamp": res.get("timestamp", ""),
                         "payment_format": res.get("payment_format", "ACH"),
                         "payment_currency": res.get("payment_currency", "USD"),
@@ -138,22 +201,23 @@ def get_all_flagged_senders() -> List[Dict[str, Any]]:
                             f"Velocity Burst: {res.get('explanation', {}).get('recent_outgoing_count', 1)} transfers executed",
                             f"Historical Behavior: {res.get('explanation', {}).get('historical_behavior', 'normal')}"
                         ],
-                        "gat_confidence": res.get("explanation", {}).get("gat_anomaly_score", "0%"),
-                        "lgb_confidence": f"{res.get('risk_score', 0)}%",
-                        "rule_confidence": "90%",
+                        "gat_confidence": res.get("gat_confidence", res.get("explanation", {}).get("gat_anomaly_score", "0%")),
+                        "lgb_confidence": f"{float(res.get('calibrated_probability', res.get('risk_score', 0.0) / 100)) * 100:.2f}%",
+                        "rule_confidence": f"{min(100.0, (float(res.get('total_transactions', 1)) / 10.0) * 100):.2f}%",
+                        "model_used": "GAT Graph Model",
                         "raw_res": res
                     })
-                return formatted
+                local_ids = {tx.get("tx_id") for tx in TRANSACTIONS}
+                return list(TRANSACTIONS) + [tx for tx in formatted if tx.get("tx_id") not in local_ids]
     except Exception:
         pass
 
     if not TRANSACTIONS:
-        add_realtime_simulation_transaction([{
-            "timestamp": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-            "from_bank": "70", "from_account": "ACC_INIT_01",
-            "to_bank": "12", "to_account": "ACC_RECV_01",
-            "amount_paid": 5000.0, "payment_currency": "USD", "payment_format": "ACH"
-        }])
+        try:
+            import stream_engine
+            add_realtime_simulation_transaction([stream_engine.generate_raw_transaction()])
+        except Exception:
+            return []
     return TRANSACTIONS
 
 def get_transaction_by_id(tx_id: str) -> Dict[str, Any]:
@@ -163,12 +227,7 @@ def get_transaction_by_id(tx_id: str) -> Dict[str, Any]:
             return t
     if all_txs:
         return all_txs[0]
-    return {
-        "tx_id": tx_id, "account": "ACC_DEFAULT", "sender_bank": "0", "receiver": "ACC_RECV",
-        "receiver_bank": "0", "amount": 1000.0, "timestamp": datetime.now().strftime("%Y/%m/%d %H:%M:%S"),
-        "payment_format": "ACH", "risk": "Low", "risk_score": 10.0, "pattern": "SINGLE TRANSFER",
-        "explanations": ["Initial system state"]
-    }
+    return {}
 
 def get_fan_out_rows(tx_id: str) -> List[List[Any]]:
     curr = get_transaction_by_id(tx_id)
@@ -182,29 +241,132 @@ def get_fan_out_rows(tx_id: str) -> List[List[Any]]:
             f"${t['amount']:,.2f}",
             t["timestamp"],
             f"{(idx+1)*2} days",
-            "Completed"
+            t.get("review_state", "PENDING_REVIEW")
         ])
     if not rows:
-        rows.append([tx_id, curr.get("receiver", "ACC_RECV"), f"${curr.get('amount', 1000.0):,.2f}", curr.get("timestamp", ""), "3 days", "Completed"])
+        rows.append([
+            tx_id,
+            curr.get("receiver", ""),
+            f"${curr.get('amount', 0.0):,.2f}",
+            curr.get("timestamp", ""),
+            "3 days",
+            curr.get("review_state", "PENDING_REVIEW")
+        ])
     return rows
 
-def get_customer_profile(acc_id: str) -> Dict[str, Any]:
+def create_network_graph(tx_id: str, include_2hop: bool = True) -> nx.DiGraph:
+    """Build the selected transaction's graph from currently ingested real records."""
+    graph = nx.DiGraph()
+    selected = get_transaction_by_id(tx_id)
+    if not selected:
+        return graph
+
+    sender = selected.get("account")
+    if not sender:
+        return graph
+    cutoff = selected.get("timestamp")
+    records = _profile_transactions(sender, cutoff)
+    direct_receivers = {tx.get("receiver") for tx in records if tx.get("account") == sender and tx.get("receiver")}
+    graph.add_node(sender, hop=0, node_type="source", color="#ef4444")
+
+    for receiver in direct_receivers:
+        receiver_rows = [tx for tx in records if tx.get("account") == sender and tx.get("receiver") == receiver]
+        amount = sum(float(tx.get("amount", 0.0)) for tx in receiver_rows)
+        graph.add_node(receiver, hop=1, node_type="receiver", color="#f59e0b")
+        graph.add_edge(sender, receiver, hop=1, amount=f"${amount:,.2f}")
+
+        if include_2hop:
+            downstream = _profile_transactions(receiver, cutoff)
+            for tx in downstream:
+                if tx.get("account") != receiver or not tx.get("receiver") or tx.get("receiver") == sender:
+                    continue
+                downstream_node = tx["receiver"]
+                graph.add_node(downstream_node, hop=2, node_type="downstream", color="#f1f5f9")
+                graph.add_edge(receiver, downstream_node, hop=2, amount=f"${float(tx.get('amount', 0.0)):,.2f}")
+    return graph
+
+def get_customer_profile(acc_id: str, as_of_timestamp: Any = None) -> Dict[str, Any]:
+    transactions = _profile_transactions(acc_id, as_of_timestamp)
+    outgoing = [tx for tx in transactions if tx.get("account") == acc_id]
+    incoming = [tx for tx in transactions if tx.get("receiver") == acc_id]
+    outgoing_amount = sum(float(tx.get("amount", 0.0)) for tx in outgoing)
+    incoming_amount = sum(float(tx.get("amount", 0.0)) for tx in incoming)
+    total_transactions = len({tx.get("tx_id") for tx in outgoing + incoming})
+    amounts = [float(tx.get("amount", 0.0)) for tx in transactions]
+    risk_scores = [float(tx.get("risk_score", 0.0)) for tx in transactions]
+    average_model_probability = (sum(risk_scores) / len(risk_scores) / 100.0) if risk_scores else 0.0
+    velocity_factor = min(1.0, total_transactions / 10.0)
+    high_risk_count = sum(1 for tx in transactions if float(tx.get("risk_score", 0.0)) >= 75.0)
+    high_risk_factor = min(1.0, high_risk_count / 5.0)
+    volume_factor = min(1.0, outgoing_amount / 100000.0)
+    calibrated_probability = min(1.0, max(0.0, (
+        average_model_probability * 0.55
+        + velocity_factor * 0.20
+        + high_risk_factor * 0.15
+        + volume_factor * 0.10
+    )))
+    prior_amounts = [float(tx.get("amount", 0.0)) for tx in outgoing[:-1]]
+    latest_amount = float(outgoing[-1].get("amount", 0.0)) if outgoing else 0.0
+    prior_average = sum(prior_amounts) / len(prior_amounts) if prior_amounts else 0.0
+    sudden_spike = bool(prior_average and latest_amount >= prior_average * 2.0)
+    decision = AUDITOR_DECISIONS.get(acc_id, {})
+    review_state = decision.get("review_state")
+    if review_state not in REVIEW_STATES:
+        review_state = "PENDING_REVIEW" if calibrated_probability >= 0.75 or sudden_spike else "APPROVED"
+    risk_score = round(calibrated_probability * 100.0, 2)
+    risk_tier = "High" if risk_score >= 75 else "Medium" if risk_score >= 45 else "Low"
+    behavior_summary = [
+        {"Metric": "Total Outgoing Amount", "Value": f"${outgoing_amount:,.2f}"},
+        {"Metric": "Total Incoming Amount", "Value": f"${incoming_amount:,.2f}"},
+        {"Metric": "Total Transactions", "Value": total_transactions},
+        {"Metric": "High-Risk Flags", "Value": high_risk_count},
+        {"Metric": "Calibrated Risk Score", "Value": f"{risk_score}/100"},
+        {"Metric": "Review State", "Value": review_state},
+    ]
     return {
         "name": f"Account {acc_id}",
-        "type": "Corporate / Commercial" if "CORP" in str(acc_id) else "Personal Checking",
-        "status": "Verified KYC" if "CORP" in str(acc_id) else "Standard Tier 1",
+        "account_id": acc_id,
+        "account_type": "Corporate / Commercial" if "CORP" in str(acc_id) else "Personal Checking",
+        "kyc_status": "Verified" if "CORP" in str(acc_id) else "Standard",
         "city": "New York, USA",
-        "open_date": "2021-04-12",
-        "account_id": acc_id
+        "open_since": "2021-04-12",
+        "last_login": "Recent activity",
+        "device_count": "—",
+        "risk_tier": risk_tier,
+        "risk_score": risk_score,
+        "risk_probability": round(calibrated_probability, 6),
+        "total_outgoing_amount": round(outgoing_amount, 2),
+        "total_outgoing": f"${outgoing_amount:,.2f}",
+        "total_incoming_amount": round(incoming_amount, 2),
+        "total_incoming": f"${incoming_amount:,.2f}",
+        "total_transactions": total_transactions,
+        "high_risk_flag_count": high_risk_count,
+        "unique_senders": len({tx.get("account") for tx in incoming}),
+        "unique_receivers": len({tx.get("receiver") for tx in outgoing}),
+        "avg_tx_amount": f"${(sum(amounts) / len(amounts) if amounts else 0.0):,.2f}",
+        "sudden_outgoing_spike": sudden_spike,
+        "review_state": review_state,
+        "review_reason": "Risk threshold exceeded" if risk_score >= 75 else "Sudden outgoing amount spike" if sudden_spike else "Within monitoring threshold",
+        "behavior_summary": behavior_summary,
     }
 
-def get_receiver_profile(acc_id: str) -> Dict[str, Any]:
-    return get_customer_profile(acc_id)
+def get_receiver_profile(acc_id: str, as_of_timestamp: Any = None) -> Dict[str, Any]:
+    return get_customer_profile(acc_id, as_of_timestamp)
 
 def record_auditor_decision(tx_key: str, decision: str, notes: str = ""):
-    AUDITOR_DECISIONS[tx_key] = {"decision": decision, "notes": notes}
+    state = "ESCALATED" if "Escalate" in decision else "APPROVED" if "Approve" in decision or decision == "Legitimate" else "FLAGGED"
+    matching_account = next(
+        (tx.get("account") for tx in TRANSACTIONS if tx.get("tx_id") == tx_key),
+        tx_key,
+    )
+    decision_record = {"decision": decision, "notes": notes, "review_state": state, "timestamp": datetime.now().isoformat()}
+    AUDITOR_DECISIONS[tx_key] = decision_record
+    AUDITOR_DECISIONS[matching_account] = decision_record
+    for tx in TRANSACTIONS:
+        if tx.get("tx_id") == tx_key or tx.get("account") == matching_account:
+            tx["review_state"] = state
     try:
-        requests.post(f"{BACKEND_URL}/api/auditor/decision", json={"account": tx_key, "decision": decision}, timeout=3.0)
+        requests.post(f"{BACKEND_URL}/api/auditor/decision", json={"account": matching_account, "decision": decision, "review_state": state, "notes": notes}, timeout=3.0)
     except Exception:
         pass
 

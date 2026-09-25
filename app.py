@@ -333,19 +333,8 @@ if page == "Dashboard":
             # Direct Stream Injection Buttons
             st.markdown("---")
             st.markdown("**⚡ Quick Stream Generators (Inject Raw Fan-Out / Single Transactions):**")
-            sc_col1, sc_col2, sc_col3 = st.columns(3)
+            sc_col1, sc_col2 = st.columns(2)
             with sc_col1:
-                if st.button("🏢 Stream New Corporate Account (10 Supplier Fan-Out)", type="primary", use_container_width=True):
-                    corp_txs = [
-                        {"timestamp": f"2026/09/21 14:{i+1:02d}", "from_bank": "National Bank of Harrisburg", "from_account": "ACC_CORP_SUPPLIERS_88", "to_bank": "Acme Bank", "to_account": f"ACC_SUPPLIER_{i+1:02d}", "amount_paid": 4850.0, "amount_received": 4850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "ACH", "bank_name": "National Bank of Harrisburg", "bank_id": "BNK-1092", "account_number": "ACC_CORP_SUPPLIERS_88", "entity_id": "ENT-CORP-88", "entity_name": "Acme Global Manufacturing Corp"}
-                        for i in range(10)
-                    ]
-                    new_tx = fraud_data.add_realtime_simulation_transaction(corp_txs)
-                    st.session_state.selected_tx_id = new_tx["tx_id"]
-                    st.success(f"✅ Streamed New Corporate Account ({new_tx['tx_id']}): 10 Supplier Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
-                    st.rerun()
-
-            with sc_col2:
                 if st.button("🚨 Stream Novel High-Risk Mule Fan-Out Burst", use_container_width=True):
                     mule_txs = [
                         {"timestamp": f"2026/09/21 15:{i+1:02d}", "from_bank": "Bank of New York", "from_account": "ACC_NOVEL_MULE_99", "to_bank": "Offshore Bank", "to_account": f"ACC_MULE_RECV_{i+1:02d}", "amount_paid": 9850.0, "amount_received": 9850.0, "payment_currency": "US Dollar", "receiving_currency": "US Dollar", "payment_format": "Wire", "bank_name": "Bank of New York", "bank_id": "BNK-0012", "account_number": "ACC_NOVEL_MULE_99", "entity_id": "ENT-MULE-99", "entity_name": "Unverified Individual Entity"}
@@ -356,7 +345,7 @@ if page == "Dashboard":
                     st.success(f"✅ Streamed Novel High-Risk Burst ({new_tx['tx_id']}): 10 Mule Transfers! Model Evaluated Risk = {new_tx['risk_score']}/100.")
                     st.rerun()
 
-            with sc_col3:
+            with sc_col2:
                 if st.button("⚡ Stream 1 Single Real-Time Transfer", use_container_width=True):
                     import stream_engine
                     raw_tx = stream_engine.generate_raw_transaction()
@@ -527,7 +516,7 @@ if page == "Dashboard":
             sel_border = "#93c5fd" if is_sel else "#e2e8f0"
             bar_width = score
 
-            profile = fraud_data.get_customer_profile(acc)
+            profile = fraud_data.get_customer_profile(acc, tx.get("timestamp"))
             name = profile.get("name", acc)
 
             st.html(textwrap.dedent(f"""
@@ -560,6 +549,9 @@ if page == "Dashboard":
     # ════════════════════════════════════════════════════════════════════
     with col_center:
         curr_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
+        if not curr_tx:
+            st.info("No transaction has been ingested yet. Start the real-time dataset stream to populate the dashboard.")
+            st.stop()
         risk = curr_tx["risk"]
         risk_score = curr_tx["risk_score"]
         pattern = curr_tx["pattern"]
@@ -616,9 +608,10 @@ if page == "Dashboard":
             🖱️ Click a row to view the receiver's customer profile in the right panel.
         </div>
         """)
+        st.caption("Status is the current human-review state: PENDING_REVIEW, FLAGGED, APPROVED, or ESCALATED.")
 
         # ── Why Flagged? XAI Box ──
-        if risk == "High":
+        if risk == "High" or curr_tx.get("review_state") == "PENDING_REVIEW":
             xai_extra = "xai-box-high"
             fraud_icon = "🚨"
             fraud_label = "HIGH FRAUD RISK DETECTED"
@@ -653,8 +646,8 @@ if page == "Dashboard":
         </div>
         """))
 
-        # ── Authorised Bank Auditor Decision Panel (HIGH RISK ONLY) ──
-        if risk == "High":
+        # ── Authorised Bank Auditor Decision Panel ──
+        if risk in {"High", "Medium"} or curr_tx.get("review_state") == "PENDING_REVIEW":
             tx_key = curr_tx["tx_id"]
             already_submitted = st.session_state.human_decision_submitted.get(tx_key)
 
@@ -664,7 +657,7 @@ if page == "Dashboard":
                     🏦 Authorised Bank Auditor Decision Required — {curr_tx['tx_id']}
                 </div>
                 <div style="font-size:12px;color:#92400e;margin-bottom:12px;">
-                    Risk Score: <b>{risk_score}/100</b> — This transaction requires an authorised bank auditor decision.
+                    Risk Score: <b>{risk_score}/100</b> · Review State: <b>{curr_tx.get('review_state', 'PENDING_REVIEW')}</b> — This transaction requires an authorised bank auditor decision.
                 </div>
             </div>
             """))
@@ -745,12 +738,13 @@ if page == "Dashboard":
             """))
         else:
             if isinstance(sub_tx, (list, tuple)) and len(sub_tx) > 0:
-                sub_tx = sub_tx[0]
+                sub_tx = {"tx_id": sub_tx[0], "receiver": sub_tx[1], "timestamp": sub_tx[3] if len(sub_tx) > 3 else curr_tx.get("timestamp")}
             if isinstance(sub_tx, dict):
                 to_acc = sub_tx.get("to_account", sub_tx.get("receiver", sub_tx.get("receiver_account", "")))
             else:
                 to_acc = str(sub_tx)
-            profile = fraud_data.get_receiver_profile(to_acc)
+            profile = fraud_data.get_receiver_profile(to_acc, curr_tx.get("timestamp"))
+            account_age_days = profile.get("account_age_days", "—")
             risk_tier = profile.get("risk_tier", "Unknown")
             kyc = profile.get("kyc_status", "Unknown")
 
@@ -806,7 +800,7 @@ if page == "Dashboard":
                     </div>
                     <div class="profile-metric-card">
                         <div class="profile-metric-label">Account Age (days)</div>
-                        <div class="profile-metric-val">{sub_tx.get('account_age_days', '—')}</div>
+                        <div class="profile-metric-val">{account_age_days}</div>
                     </div>
                 </div>
 
@@ -818,18 +812,6 @@ if page == "Dashboard":
                 </table>
             </div>
             """))
-
-    # ── Live Streaming Auto-Rerun Loop ──
-    if st.session_state.get("is_live_streaming", False):
-        import stream_engine
-        import time
-        raw_tx = stream_engine.generate_raw_transaction()
-        new_tx = fraud_data.add_realtime_simulation_transaction([raw_tx])
-        st.session_state.live_stream_count += 1
-        st.toast(f"📡 Real-Time Stream Ingested #{st.session_state.live_stream_count}: {raw_tx['from_account']} ➔ {raw_tx['to_account']} (${raw_tx['amount_paid']:,.2f} USD)", icon="📡")
-        time.sleep(st.session_state.get("live_stream_speed", 2.0))
-        st.rerun()
-
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  TRANSACTIONS PAGE
@@ -946,21 +928,14 @@ elif page == "⚡ Real-Time Simulator":
             if st.button("➡️ Stream Next Fan-Out Transaction (1-by-1 Feed)", type="primary", use_container_width=True):
                 if st.session_state.stream_step_index < len(fanout_sequence):
                     st.session_state.stream_step_index += 1
-                    st.session_state.stream_tx_list = fanout_sequence[:st.session_state.stream_step_index]
-                    res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
+                    next_tx = fanout_sequence[st.session_state.stream_step_index - 1]
+                    st.session_state.stream_tx_list.append(next_tx)
+                    res_tx = fraud_data.add_realtime_simulation_transaction([next_tx])
                     st.session_state.selected_tx_id = res_tx["tx_id"]
                     st.success(f"✅ Streamed Step {st.session_state.stream_step_index}/10: Out-Degree = {st.session_state.stream_step_index}, Risk = {res_tx['risk_score']}/100!")
                     st.rerun()
                 else:
                     st.info("ℹ️ All 10 fan-out transactions have been streamed! Reset engine to restart.")
-        with p_col2:
-            if st.button("🚀 Stream All 10 Transactions at Once", use_container_width=True):
-                st.session_state.stream_step_index = 10
-                st.session_state.stream_tx_list = fanout_sequence
-                res_tx = fraud_data.add_realtime_simulation_transaction(st.session_state.stream_tx_list)
-                st.session_state.selected_tx_id = res_tx["tx_id"]
-                st.success("✅ Streamed full 10-tx burst!")
-                st.rerun()
         with p_col3:
             if st.button("🗑️ Reset Real-Time Stream Engine", use_container_width=True):
                 st.session_state.stream_tx_list = []
@@ -1084,6 +1059,9 @@ elif page == "Alerts / Graph Network":
     # Pre-select the tx from dashboard if navigated via the graph button
     default_sel = st.session_state.selected_tx_id
     tx_options = [t["tx_id"] for t in fraud_data.TRANSACTIONS]
+    if not tx_options:
+        st.info("No transaction network is available yet. Ingest a dataset transaction first.")
+        st.stop()
     default_idx = tx_options.index(default_sel) if default_sel in tx_options else 0
 
     col_g1, col_g2 = st.columns([2, 1])
@@ -1097,6 +1075,9 @@ elif page == "Alerts / Graph Network":
         show_2hop = st.checkbox("Show 2-Hop Neighbors", value=True)
 
     tx_info = fraud_data.get_transaction_by_id(sel_tx)
+    if not tx_info:
+        st.info("The selected transaction is no longer available. Ingest another dataset transaction.")
+        st.stop()
 
     # Info bar
     risk_col = "#dc2626" if tx_info["risk"] == "High" else "#d97706" if tx_info["risk"] == "Medium" else "#dc2626"
@@ -1113,7 +1094,7 @@ elif page == "Alerts / Graph Network":
         </div>
         <div>
             <div style="font-size:11px;color:#64748b;font-weight:600;">MODEL</div>
-            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info['model_used']}</div>
+            <div style="font-size:14px;font-weight:700;color:#1e293b;">{tx_info.get('model_used', 'GAT Graph Model')}</div>
         </div>
         <div>
             <div style="font-size:11px;color:#64748b;font-weight:600;">SENDER</div>
@@ -1171,8 +1152,13 @@ elif page == "Alerts / Graph Network":
 # ══════════════════════════════════════════════════════════════════════════════
 elif page == "Customers":
     st.subheader("👤 Customer Profiling & Network Risk")
-    acc_sel = st.selectbox("Select Account ID", list(fraud_data.CUSTOMER_PROFILES.keys()))
-    prof = fraud_data.get_customer_profile(acc_sel)
+    customer_accounts = fraud_data.get_customer_accounts()
+    if not customer_accounts:
+        st.info("No dataset transaction has been ingested yet. Start the real-time dataset stream first.")
+        st.stop()
+    acc_sel = st.selectbox("Select Account ID", customer_accounts)
+    selected_profile_tx = fraud_data.get_transaction_by_id(st.session_state.selected_tx_id)
+    prof = fraud_data.get_customer_profile(acc_sel, selected_profile_tx.get("timestamp"))
 
     c1, c2 = st.columns(2)
     with c1:
@@ -1181,12 +1167,29 @@ elif page == "Customers":
         st.markdown(f"**City:** {prof.get('city', '—')}")
         st.markdown(f"**Account Type:** {prof.get('account_type', '—')}")
     with c2:
-        st.markdown(f"**Risk Tier:** {prof.get('risk_tier', '—')}")
+        st.markdown(f"**Risk Tier:** {prof.get('risk_tier', '—')} ({prof.get('risk_score', 0)}/100)")
         st.markdown(f"**Open Since:** {prof.get('open_since', '—')}")
         st.markdown(f"**Last Login:** {prof.get('last_login', '—')}")
         st.markdown(f"**Devices:** {prof.get('device_count', '—')}")
 
-    st.dataframe(pd.DataFrame(prof["behavior_summary"]), use_container_width=True)
+    st.markdown(f"**Total Outgoing:** {prof['total_outgoing']}  ")
+    st.markdown(f"**Total Transactions:** {prof['total_transactions']}  ")
+    st.markdown(f"**Review State:** `{prof['review_state']}`")
+    if prof["review_state"] == "PENDING_REVIEW" or prof["sudden_outgoing_spike"]:
+        st.warning(f"Human review required: {prof['review_reason']}")
+    st.dataframe(pd.DataFrame(prof["behavior_summary"]), use_container_width=True, hide_index=True)
+    customer_decision = st.selectbox(
+        "Update Human Review State",
+        ["PENDING_REVIEW", "FLAGGED", "APPROVED", "ESCALATED"],
+        index=["PENDING_REVIEW", "FLAGGED", "APPROVED", "ESCALATED"].index(prof["review_state"]),
+        key=f"customer_review_state_{acc_sel}"
+    )
+    customer_notes = st.text_area("Reviewer Notes", key=f"customer_review_notes_{acc_sel}")
+    if st.button("Persist Customer Review", type="primary", key=f"persist_customer_review_{acc_sel}"):
+        decision_label = {"PENDING_REVIEW": "Pending Review", "FLAGGED": "Fraud", "APPROVED": "Legitimate", "ESCALATED": "Escalate"}[customer_decision]
+        fraud_data.record_auditor_decision(acc_sel, decision_label, customer_notes)
+        st.success(f"Saved {customer_decision} for {acc_sel}.")
+        st.rerun()
 
 # ══════════════════════════════════════════════════════════════════════════════
 #  REMAINING PAGES
@@ -1216,7 +1219,7 @@ elif page == "Help":
 1. Click a **Flagged Account** in the left panel to load its transactions.
 2. Click any **row** in the transaction table to view the **receiver's customer profile** on the right.
 3. Tap **"View as Graph Network"** to visualize the 2-hop transaction network.
-4. For **High Risk** transactions, submit your decision in the **Authorised Bank Auditor Decision Panel**.
+4. For **High** and **Medium Risk** transactions, submit your decision in the **Authorised Bank Auditor Decision Panel**.
 
 ### AI Advisory Disclaimer:
 The AI model provides pattern analysis and risk scores to *support* the investigation. **Final decisions must always be made by an AUTHORIZED BANK AUDITOR.**

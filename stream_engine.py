@@ -8,17 +8,67 @@ import pandas as pd
 from datetime import datetime
 
 BACKEND_URL = "http://localhost:8000/api/transactions/stream"
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
+_dataset_rows = None
+_dataset_accounts = {}
+_dataset_index = 0
+
+def reset_dataset_cursor() -> None:
+    global _dataset_rows, _dataset_accounts, _dataset_index
+    _dataset_rows = None
+    _dataset_accounts = {}
+    _dataset_index = 0
+
+def generate_raw_transaction() -> dict:
+    """Return the next chronological transaction from the bundled test dataset."""
+    global _dataset_rows, _dataset_accounts, _dataset_index
+    if _dataset_rows is None:
+        _dataset_rows, _dataset_accounts = load_and_prepare_data()
+        _dataset_index = 0
+    if _dataset_rows.empty:
+        raise RuntimeError("Data/testing_accounts.csv contains no transactions")
+    row = _dataset_rows.iloc[_dataset_index % len(_dataset_rows)]
+    row_index = _dataset_index
+    _dataset_index += 1
+    from_acc = str(row.get("From Account", row.get("Account", ""))).strip()
+    to_acc = str(row.get("To Account", row.get("Account.1", ""))).strip()
+    sender_meta = _dataset_accounts.get(from_acc, {})
+    return {
+        "transaction_id": f"TX-DATA-{row_index + 1:05d}",
+        "timestamp": str(row.get("Timestamp", "")),
+        "from_bank": str(row.get("From Bank", sender_meta.get("bank_id", "0"))),
+        "from_account": from_acc,
+        "to_bank": str(row.get("To Bank", "0")),
+        "to_account": to_acc,
+        "amount_paid": float(row.get("Amount Paid", 0.0)),
+        "amount_received": float(row.get("Amount Received", 0.0)),
+        "payment_currency": str(row.get("Payment Currency", "USD")),
+        "receiving_currency": str(row.get("Receiving Currency", "USD")),
+        "payment_format": str(row.get("Payment Format", "ACH")),
+        "bank_name": sender_meta.get("bank_name", ""),
+        "bank_id": sender_meta.get("bank_id", ""),
+        "account_number": from_acc,
+        "entity_id": sender_meta.get("entity_id", ""),
+        "entity_name": sender_meta.get("entity_name", ""),
+    }
 
 def load_and_prepare_data(data_path: str = "Data/testing_accounts.csv", accounts_path: str = "Data/testing_trans.csv"):
+    if not os.path.isabs(data_path):
+        data_path = os.path.join(PROJECT_DIR, data_path)
+    if not os.path.isabs(accounts_path):
+        accounts_path = os.path.join(PROJECT_DIR, accounts_path)
+
     # 1. Fallback / Auto-resolution if default paths don't exist
     if not os.path.exists(data_path):
         for candidate in ["Data/testing_accounts.csv", "Data/HI-Small_FANOUT_testing_data.csv", "Data/HI-Small_FANOUT_testing_data.csv.csv"]:
+            candidate = os.path.join(PROJECT_DIR, candidate)
             if os.path.exists(candidate):
                 data_path = candidate
                 break
 
     if not os.path.exists(accounts_path):
         for candidate in ["Data/testing_trans.csv", "Data/HI-Small_FANOUT_testing_accounts.csv"]:
+            candidate = os.path.join(PROJECT_DIR, candidate)
             if os.path.exists(candidate):
                 accounts_path = candidate
                 break

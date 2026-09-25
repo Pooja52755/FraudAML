@@ -22,6 +22,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 logging.basicConfig(level=logging.INFO, format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backend_api")
+PROJECT_DIR = os.path.dirname(os.path.abspath(__file__))
 
 # ==========================================
 # 1. EXACT GAT MODEL ARCHITECTURE (32,385 PARAMS)
@@ -166,6 +167,7 @@ class GATStreamingEngine:
         self.edges: List[Dict[str, Any]] = []
         self.account_history: Dict[str, Dict[str, Any]] = {}
         self.auditor_memory: Dict[str, str] = {}
+        self.review_states: Dict[str, Dict[str, Any]] = {}
 
     def initialize_scalers_from_dataset(self, df: pd.DataFrame):
         df_copy = df.copy()
@@ -249,7 +251,7 @@ class GATStreamingEngine:
                 "out_count": 0, "in_count": 0,
                 "out_total": 0.0, "in_total": 0.0,
                 "out_amounts": [], "unique_receivers": set(),
-                "unique_senders": set(), "tx_timestamps": []
+                "unique_senders": set(), "tx_timestamps": [], "high_risk_count": 0
             }
         return self.node_to_id[node_key]
 
@@ -381,30 +383,54 @@ class GATStreamingEngine:
             raw_logit_val = float(logit.item() if logit.numel() == 1 else logit[0].item())
             gat_probability = float(torch.sigmoid(torch.tensor(raw_logit_val)).item())
 
-        # 3. Calculate Risk Score strictly from GAT Probability (NO HEURISTIC OVERRIDE!)
-        risk_score = round(gat_probability * 100, 2)
-
         # Independent Pattern Detection for Display / Explanation ONLY (Does NOT alter gat_probability!)
         prior_out_cnt = src_hist["out_count"]
         unique_recs = len(src_hist["unique_receivers"]) + (1 if dst_key not in src_hist["unique_receivers"] else 0)
         pattern = "FAN-OUT" if (prior_out_cnt >= 4 or unique_recs >= 5) else "SINGLE TRANSFER"
 
+        amt_paid = float(tx.get("amount_paid", tx.get("Amount Paid", tx.get("amount_received", 0.0))))
+        prior_amounts = src_hist["out_amounts"]
+        prior_average = (sum(prior_amounts) / len(prior_amounts)) if prior_amounts else 0.0
+        velocity_factor = min(1.0, (prior_out_cnt + 1) / 10.0)
+        high_risk_factor = min(1.0, src_hist.get("high_risk_count", 0) / 5.0)
+        outgoing_volume_factor = min(1.0, (src_hist["out_total"] + amt_paid) / 100000.0)
+        sudden_spike = bool(prior_average and amt_paid >= prior_average * 2.0)
+        calibrated_probability = min(
+            1.0,
+            max(
+                0.0,
+                (gat_probability * 0.55)
+                + (velocity_factor * 0.20)
+                + (high_risk_factor * 0.15)
+                + (outgoing_volume_factor * 0.10),
+            ),
+        )
+        risk_score = round(calibrated_probability * 100, 2)
+
         # Check Auditor Override Memory
         override = self.auditor_memory.get(from_acc, self.auditor_memory.get(src_key, None))
         if override == "Legitimate":
             gat_probability = 0.12
+            calibrated_probability = 0.12
             risk_score = 12.0
             risk_level = "LOW"
         else:
-            if gat_probability >= 0.45:
+            if calibrated_probability >= 0.75:
                 risk_level = "HIGH"
-            elif gat_probability >= 0.25:
+            elif calibrated_probability >= 0.45:
                 risk_level = "MEDIUM"
             else:
                 risk_level = "LOW"
 
-        amt_paid = float(tx.get("amount_paid", tx.get("Amount Paid", tx.get("amount_received", 0.0))))
         tx_id = str(tx.get("transaction_id", f"TX-{len(self.edges)+1:05d}"))
+        associated_transaction_count = sum(
+            1 for edge in self.edges
+            if edge["sender"] == from_acc or edge["receiver"] == from_acc
+        ) + 1
+        review_state = self.review_states.get(from_acc, {}).get("state")
+        if not review_state:
+            review_state = "PENDING_REVIEW" if risk_score >= 75.0 or sudden_spike else "APPROVED"
+        review_reason = "Risk threshold exceeded" if risk_score >= 75.0 else "Sudden outgoing amount spike" if sudden_spike else "Within monitoring threshold"
 
         # Print Debug Info for early transactions
         if len(self.edges) < 3 or risk_level == "HIGH":
@@ -421,6 +447,7 @@ class GATStreamingEngine:
         result = {
             "transaction_id": tx_id,
             "risk_probability": round(gat_probability, 6),
+            "calibrated_probability": round(calibrated_probability, 6),
             "gat_confidence": f"{gat_probability * 100:.4f}%",
             "risk_score": risk_score,
             "risk_level": risk_level,
@@ -430,6 +457,11 @@ class GATStreamingEngine:
             "receiver": to_acc,
             "receiver_bank": to_bank,
             "amount": amt_paid,
+            "total_outgoing_amount": round(src_hist["out_total"] + amt_paid, 2),
+            "total_transactions": associated_transaction_count,
+            "high_risk_flag_count": src_hist.get("high_risk_count", 0),
+            "review_state": review_state,
+            "review_reason": review_reason,
             "timestamp": str(tx.get("timestamp", tx.get("Timestamp", datetime.now().strftime("%Y/%m/%d %H:%M:%S")))),
             "payment_format": str(tx.get("payment_format", tx.get("Payment Format", "ACH"))),
             "payment_currency": str(tx.get("payment_currency", tx.get("Payment Currency", "USD"))),
@@ -461,6 +493,7 @@ class GATStreamingEngine:
         dst_hist["unique_senders"].add(src_key)
 
         self.edges.append(result)
+        src_hist["high_risk_count"] += int(risk_score >= 75.0)
         return result
 
 
@@ -490,9 +523,9 @@ def startup_event():
     engine = GATStreamingEngine(pt_path)
 
     # Initialize scalers from testing dataset if available
-    csv_path = "Data/testing_accounts.csv"
+    csv_path = os.path.join(PROJECT_DIR, "Data", "testing_accounts.csv")
     if not os.path.exists(csv_path):
-        csv_path = "Data/HI-Small_FANOUT_testing_data.csv"
+        csv_path = os.path.join(PROJECT_DIR, "Data", "HI-Small_FANOUT_testing_data.csv")
     if os.path.exists(csv_path):
         df_init = pd.read_csv(csv_path)
         if 'Timestamp' in df_init.columns:
@@ -510,9 +543,9 @@ def read_root():
 def validate_model_endpoint():
     if not engine:
         raise HTTPException(status_code=500, detail="GAT Engine not initialized")
-    csv_path = "Data/testing_accounts.csv"
+    csv_path = os.path.join(PROJECT_DIR, "Data", "testing_accounts.csv")
     if not os.path.exists(csv_path):
-        csv_path = "Data/HI-Small_FANOUT_testing_data.csv"
+        csv_path = os.path.join(PROJECT_DIR, "Data", "HI-Small_FANOUT_testing_data.csv")
     if not os.path.exists(csv_path):
         raise HTTPException(status_code=404, detail=f"Testing dataset not found at {csv_path}")
 
@@ -579,7 +612,7 @@ def get_dashboard_summary():
     high = sum(1 for e in engine.edges if e["risk_level"] == "HIGH")
     med = sum(1 for e in engine.edges if e["risk_level"] == "MEDIUM")
     low = sum(1 for e in engine.edges if e["risk_level"] == "LOW")
-    recent = engine.edges[-20:][::-1]
+    recent = engine.edges[::-1]
 
     return {
         "processed": total,
@@ -589,16 +622,41 @@ def get_dashboard_summary():
         "recent_transactions": recent
     }
 
+@app.post("/api/system/reset")
+def reset_system():
+    if not engine:
+        raise HTTPException(status_code=500, detail="GAT Engine not initialized")
+    engine.node_to_id.clear()
+    engine.id_to_node.clear()
+    engine.edges.clear()
+    engine.account_history.clear()
+    engine.auditor_memory.clear()
+    engine.review_states.clear()
+    return {"status": "reset", "processed": 0}
+
 @app.post("/api/auditor/decision")
 def set_auditor_decision(payload: Dict[str, Any] = Body(...)):
     if not engine:
         raise HTTPException(status_code=500, detail="GAT Engine not initialized")
     account = str(payload.get("account", "")).strip()
     decision = str(payload.get("decision", "Legitimate")).strip()
+    review_state = str(payload.get("review_state", "")).strip().upper()
+    state_by_decision = {
+        "Legitimate": "APPROVED",
+        "Approve": "APPROVED",
+        "Fraud": "FLAGGED",
+        "Block": "FLAGGED",
+        "Escalate": "ESCALATED",
+    }
     if account:
         engine.auditor_memory[account] = decision
-        logger.info(f"Auditor decision saved: Account {account} set to {decision}")
-        return {"status": "success", "account": account, "decision": decision}
+        state = review_state if review_state in {"PENDING_REVIEW", "FLAGGED", "APPROVED", "ESCALATED"} else state_by_decision.get(decision, "PENDING_REVIEW")
+        engine.review_states[account] = {"state": state, "decision": decision, "notes": str(payload.get("notes", "")), "timestamp": datetime.now().isoformat()}
+        for edge in engine.edges:
+            if edge["sender"] == account:
+                edge["review_state"] = state
+        logger.info(f"Auditor decision saved: Account {account} set to {decision} ({state})")
+        return {"status": "success", "account": account, "decision": decision, "review_state": state}
     raise HTTPException(status_code=400, detail="Missing account field")
 
 if __name__ == "__main__":
