@@ -186,68 +186,117 @@ def get_all_flagged_senders() -> List[Dict[str, Any]]:
     _load_decisions()
     
     if not TRANSACTIONS:
-        csv_path = os.path.join(os.path.dirname(__file__), "Data", "testing_accounts.csv")
-        if os.path.exists(csv_path):
-            df = pd.read_csv(csv_path)
-            tx_list = []
-            for idx, row in df.iterrows():
-                is_fraud = int(row.get('Is Laundering', 0))
-                risk_score = 95.0 if is_fraud else 15.0
-                risk_level = "High" if is_fraud else "Low"
-                tx_id = f"TX-SIM-{idx+1:05d}"
-                acc = str(row.get('Account', ''))
-                
-                # Check if decision exists in DB
-                state = "FLAGGED" if is_fraud else "APPROVED"
-                reason = "Known laundering pattern" if is_fraud else "Legitimate"
-                if acc in AUDITOR_DECISIONS:
-                    state = AUDITOR_DECISIONS[acc].get("review_state", state)
-                    reason = AUDITOR_DECISIONS[acc].get("decision", reason)
-                elif tx_id in AUDITOR_DECISIONS:
-                    state = AUDITOR_DECISIONS[tx_id].get("review_state", state)
-                    reason = AUDITOR_DECISIONS[tx_id].get("decision", reason)
+        success = False
+        try:
+            requests.post(f"{BACKEND_URL}/api/system/reset", timeout=5.0)
+            requests.get(f"{BACKEND_URL}/api/validate", timeout=20.0)
+            resp = requests.get(f"{BACKEND_URL}/api/dashboard/summary", timeout=10.0)
+            if resp.status_code == 200:
+                data = resp.json()
+                api_txs = data.get("recent_transactions", [])
+                if api_txs:
+                    formatted = []
+                    for res in api_txs:
+                        tx_id = res.get("transaction_id", "TX-001")
+                        acc = res.get("sender", "ACC_UNK")
+                        state = res.get("review_state", "APPROVED")
+                        reason = res.get("review_reason", "")
+                        if acc in AUDITOR_DECISIONS:
+                            state = AUDITOR_DECISIONS[acc].get("review_state", state)
+                            reason = AUDITOR_DECISIONS[acc].get("decision", reason)
+                        elif tx_id in AUDITOR_DECISIONS:
+                            state = AUDITOR_DECISIONS[tx_id].get("review_state", state)
+                            reason = AUDITOR_DECISIONS[tx_id].get("decision", reason)
+                            
+                        formatted.append({
+                            "tx_id": tx_id,
+                            "account": acc,
+                            "sender_bank": res.get("sender_bank", "0"),
+                            "receiver": res.get("receiver", "ACC_RECV"),
+                            "receiver_bank": res.get("receiver_bank", "0"),
+                            "amount": res.get("amount", 0.0),
+                            "amount_formatted": f"${float(res.get('amount', 0.0)):,.2f}",
+                            "total_outgoing_amount": res.get("total_outgoing_amount", res.get("amount", 0.0)),
+                            "total_transactions": res.get("total_transactions", 1),
+                            "review_state": state,
+                            "review_reason": reason,
+                            "timestamp": res.get("timestamp", ""),
+                            "payment_format": res.get("payment_format", "ACH"),
+                            "payment_currency": res.get("payment_currency", "USD"),
+                            "risk": str(res.get("risk_level", "Low")).capitalize(),
+                            "risk_score": res.get("risk_score", 0.0),
+                            "pattern": res.get("pattern", "SINGLE TRANSFER"),
+                            "explanations": [
+                                f"GAT Graph Topology: Anomaly score {res.get('explanation', {}).get('gat_anomaly_score', '0%')}",
+                                f"Velocity Burst: {res.get('explanation', {}).get('recent_outgoing_count', 1)} transfers executed",
+                                f"Historical Behavior: {res.get('explanation', {}).get('historical_behavior', 'normal')}"
+                            ],
+                            "gat_confidence": res.get("gat_confidence", res.get("explanation", {}).get("gat_anomaly_score", "0%")),
+                            "lgb_confidence": f"{float(res.get('calibrated_probability', res.get('risk_score', 0.0) / 100)) * 100:.2f}%",
+                            "rule_confidence": f"{min(100.0, (float(res.get('total_transactions', 1)) / 10.0) * 100):.2f}%",
+                            "model_used": "GAT Graph Model",
+                            "raw_res": res
+                        })
+                    try:
+                        formatted.sort(key=lambda x: pd.to_datetime(x["timestamp"]))
+                    except:
+                        pass
+                    TRANSACTIONS.extend(formatted)
+                    success = True
+        except Exception:
+            pass
+            
+        if not success:
+            csv_path = os.path.join(os.path.dirname(__file__), "Data", "testing_accounts.csv")
+            if os.path.exists(csv_path):
+                df = pd.read_csv(csv_path)
+                tx_list = []
+                for idx, row in df.iterrows():
+                    is_fraud = int(row.get('Is Laundering', 0))
+                    risk_score = 95.0 if is_fraud else 15.0
+                    risk_level = "High" if is_fraud else "Low"
+                    tx_id = f"TX-SIM-{idx+1:05d}"
+                    acc = str(row.get('Account', ''))
+                    
+                    state = "FLAGGED" if is_fraud else "APPROVED"
+                    reason = "Known laundering pattern" if is_fraud else "Legitimate"
+                    if acc in AUDITOR_DECISIONS:
+                        state = AUDITOR_DECISIONS[acc].get("review_state", state)
+                        reason = AUDITOR_DECISIONS[acc].get("decision", reason)
+                    elif tx_id in AUDITOR_DECISIONS:
+                        state = AUDITOR_DECISIONS[tx_id].get("review_state", state)
+                        reason = AUDITOR_DECISIONS[tx_id].get("decision", reason)
 
-                tx_entry = {
-                    "tx_id": tx_id,
-                    "account": acc,
-                    "sender_bank": str(row.get('From Bank', '')),
-                    "receiver": str(row.get('Account.1', '')),
-                    "receiver_bank": str(row.get('To Bank', '')),
-                    "amount": float(row.get('Amount Paid', 0.0)),
-                    "amount_formatted": f"${float(row.get('Amount Paid', 0.0)):,.2f}",
-                    "total_outgoing_amount": float(row.get('Amount Paid', 0.0)),
-                    "total_transactions": 1,
-                    "review_state": state,
-                    "review_reason": reason,
-                    "timestamp": str(row.get('Timestamp', '')),
-                    "payment_format": str(row.get('Payment Format', 'ACH')),
-                    "payment_currency": str(row.get('Payment Currency', 'USD')),
-                    "risk": risk_level,
-                    "risk_score": risk_score,
-                    "pattern": "FAN-OUT" if is_fraud else "SINGLE TRANSFER",
-                    "explanations": ["High-risk fan-out detected", "Velocity anomaly"] if is_fraud else ["Model prediction based on historical data"],
-                    "gat_confidence": f"{risk_score}%",
-                    "lgb_confidence": f"{risk_score}%",
-                    "rule_confidence": "90.00%",
-                    "model_used": "GAT Graph Model + Ground Truth",
-                    "raw_res": {}
-                }
-                tx_list.append(tx_entry)
-            
-            try:
-                tx_list.sort(key=lambda x: pd.to_datetime(x["timestamp"]))
-            except:
-                pass
-            TRANSACTIONS.extend(tx_list)
-            
-            # Apply decisions to loaded transactions
-            for tx in TRANSACTIONS:
-                tx_key = tx.get("tx_id")
-                acc_key = tx.get("account")
-                if acc_key in AUDITOR_DECISIONS:
-                    tx["review_state"] = AUDITOR_DECISIONS[acc_key].get("review_state", tx["review_state"])
-                elif tx_key in AUDITOR_DECISIONS:
-                    tx["review_state"] = AUDITOR_DECISIONS[tx_key].get("review_state", tx["review_state"])
+                    tx_list.append({
+                        "tx_id": tx_id,
+                        "account": acc,
+                        "sender_bank": str(row.get('From Bank', '')),
+                        "receiver": str(row.get('Account.1', '')),
+                        "receiver_bank": str(row.get('To Bank', '')),
+                        "amount": float(row.get('Amount Paid', 0.0)),
+                        "amount_formatted": f"${float(row.get('Amount Paid', 0.0)):,.2f}",
+                        "total_outgoing_amount": float(row.get('Amount Paid', 0.0)),
+                        "total_transactions": 1,
+                        "review_state": state,
+                        "review_reason": reason,
+                        "timestamp": str(row.get('Timestamp', '')),
+                        "payment_format": str(row.get('Payment Format', 'ACH')),
+                        "payment_currency": str(row.get('Payment Currency', 'USD')),
+                        "risk": risk_level,
+                        "risk_score": risk_score,
+                        "pattern": "FAN-OUT" if is_fraud else "SINGLE TRANSFER",
+                        "explanations": ["High-risk fan-out detected", "Velocity anomaly"] if is_fraud else ["Model prediction based on historical data"],
+                        "gat_confidence": f"{risk_score}%",
+                        "lgb_confidence": f"{risk_score}%",
+                        "rule_confidence": "90.00%",
+                        "model_used": "GAT Graph Model + Ground Truth",
+                        "raw_res": {}
+                    })
+                try:
+                    tx_list.sort(key=lambda x: pd.to_datetime(x["timestamp"]))
+                except:
+                    pass
+                TRANSACTIONS.extend(tx_list)
                 
     return TRANSACTIONS
 
